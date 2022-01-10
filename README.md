@@ -1,6 +1,6 @@
 ## Status
 
-This library is under construction.
+This library is under construction. See https://github.com/api7/wasm-nginx-module/issues/25 to know the progress.
 
 ## Description
 
@@ -81,6 +81,26 @@ if not ctx then
     return
 end
 assert(wasm.on_http_request_headers(ctx))
+```
+
+### on_http_response_headers
+
+`syntax: ok, err = proxy_wasm.on_http_response_headers(plugin_ctx)`
+
+Run the HTTP response headers filter in the plugin of the given plugin ctx.
+
+```lua
+local plugin, err = proxy_wasm.load("plugin","t/testdata/http_lifecycle/main.go.wasm")
+if not plugin then
+    ngx.log(ngx.ERR, "failed to load wasm ", err)
+    return
+end
+local ctx, err = wasm.on_configure(plugin, '{"body":512}')
+if not ctx then
+    ngx.log(ngx.ERR, "failed to create plugin ctx ", err)
+    return
+end
+assert(wasm.on_http_response_headers(ctx))
 ```
 
 ## proxy-wasm ABI

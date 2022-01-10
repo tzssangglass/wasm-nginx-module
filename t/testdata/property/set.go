@@ -1,6 +1,8 @@
 package main
 
 import (
+	"strings"
+
 	"github.com/tetratelabs/proxy-wasm-go-sdk/proxywasm"
 	"github.com/tetratelabs/proxy-wasm-go-sdk/proxywasm/types"
 )
@@ -28,44 +30,33 @@ type pluginContext struct {
 
 // Override types.DefaultPluginContext.
 func (*pluginContext) NewHttpContext(contextID uint32) types.HttpContext {
-	return &httpContext{contextID: contextID}
+	return &httpLifecycle{contextID: contextID}
 }
 
-type httpContext struct {
+func (*pluginContext) OnPluginStart(pluginConfigurationSize int) types.OnPluginStartStatus {
+	return true
+}
+
+type httpLifecycle struct {
 	// Embed the default http context here,
 	// so that we don't need to reimplement all the methods.
 	types.DefaultHttpContext
 	contextID uint32
 }
 
-// Override types.DefaultHttpContext.
-func (ctx *httpContext) OnHttpRequestHeaders(numHeaders int, endOfStream bool) types.Action {
+func (ctx *httpLifecycle) OnHttpRequestHeaders(numHeaders int, endOfStream bool) types.Action {
 	data, err := proxywasm.GetPluginConfiguration()
 	if err != nil {
-		proxywasm.LogCriticalf("error reading plugin configuration: %v", err)
+		proxywasm.LogErrorf("error reading plugin configuration: %v", err)
 		return types.ActionContinue
 	}
 
-	action := string(data)
-
-	if action == "403_body" {
-		body := "should not pass"
-		err = proxywasm.SendHttpResponse(403, [][2]string{
-			{"powered-by", "proxy-wasm-go-sdk!!"},
-		}, []byte(body), -1)
-	} else if action == "502" {
-		err = proxywasm.SendHttpResponse(502, nil, nil, -1)
-	} else if action == "multi_hdrs" {
-		err = proxywasm.SendHttpResponse(401, [][2]string{
-			{"hello", "spacewander"},
-			{"hi", "spacewander"},
-			{"hello", "world"},
-		}, nil, -1)
-	}
-
+	configure := strings.Split(string(data), "|")
+	err = proxywasm.SetProperty([]string{configure[0]}, []byte(configure[1]))
 	if err != nil {
-		proxywasm.LogErrorf("failed to send local response: %v", err)
+		proxywasm.LogErrorf("error set property: %v", err)
 		return types.ActionContinue
 	}
-	return types.ActionPause
+	proxywasm.LogWarnf("set property success: %v = %v", configure[0], configure[1])
+	return types.ActionContinue
 }

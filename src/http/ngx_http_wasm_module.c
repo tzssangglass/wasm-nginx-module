@@ -1,6 +1,7 @@
 #include <ngx_config.h>
 #include <ngx_core.h>
 #include <ngx_http.h>
+#include "ngx_http_wasm_api.h"
 #include "ngx_http_wasm_module.h"
 #include "ngx_http_wasm_state.h"
 #include "ngx_http_wasm_ctx.h"
@@ -29,11 +30,23 @@ static ngx_str_t proxy_on_done = ngx_string("proxy_on_done");
 static ngx_str_t proxy_on_delete = ngx_string("proxy_on_delete");
 static ngx_str_t proxy_on_request_headers =
     ngx_string("proxy_on_request_headers");
+static ngx_str_t proxy_on_response_headers =
+    ngx_string("proxy_on_response_headers");
+static ngx_str_t proxy_on_http_call_response =
+    ngx_string("proxy_on_http_call_response");
 
 
 typedef enum {
     HTTP_REQUEST_HEADERS = 1,
+    HTTP_REQUEST_BODY = 2,
+    HTTP_RESPONSE_HEADERS = 4,
+    HTTP_RESPONSE_BODY = 8,
 } ngx_http_wasm_phase_t;
+
+
+enum {
+    RC_NEED_HTTP_CALL = 1,
+};
 
 
 static ngx_command_t ngx_http_wasm_cmds[] = {
@@ -139,6 +152,11 @@ ngx_http_wasm_init(ngx_conf_t *cf)
 
     if (ngx_process == NGX_PROCESS_SIGNALLER || ngx_test_config || ngx_http_wasm_vm_inited) {
         return NGX_OK;
+    }
+
+    rc = ngx_http_wasm_resolve_symbol();
+    if (rc != NGX_OK) {
+        return rc;
     }
 
     wmcf = ngx_http_conf_get_module_main_conf(cf, ngx_http_wasm_module);
@@ -337,6 +355,7 @@ ngx_http_wasm_on_configure(ngx_http_wasm_plugin_t *hw_plugin, const char *conf, 
         q = ngx_queue_last(&hw_plugin->free);
         ngx_queue_remove(q);
         hwp_ctx = ngx_queue_data(q, ngx_http_wasm_plugin_ctx_t, queue);
+        hwp_ctx->done = 0;
         ctx_id = hwp_ctx->id;
 
     } else {
@@ -509,7 +528,7 @@ ngx_http_wasm_cleanup(void *data)
 }
 
 
-static ngx_http_wasm_ctx_t *
+ngx_http_wasm_ctx_t *
 ngx_http_wasm_get_module_ctx(ngx_http_request_t *r)
 {
     ngx_http_wasm_ctx_t       *ctx;
@@ -581,12 +600,43 @@ ngx_http_wasm_fetch_http_ctx(ngx_http_wasm_plugin_ctx_t *hwp_ctx, ngx_http_reque
 }
 
 
+static ngx_int_t
+ngx_http_wasm_handle_rc_before_proxy(ngx_http_wasm_main_conf_t *wmcf,
+                                     ngx_http_wasm_ctx_t *ctx, ngx_int_t rc)
+{
+    int32_t code = wmcf->code;
+
+    /* reset code for next use */
+    wmcf->code = 0;
+
+    /* the http call is prior to other operation */
+    if (ctx->callout) {
+        return RC_NEED_HTTP_CALL;
+    }
+
+    if (rc < 0) {
+        return rc;
+    }
+
+    if (code >= 100) {
+        /* Return given http response instead of reaching the upstream.
+         * The body will be fetched later by ngx_http_wasm_fetch_local_body
+         * */
+        return code;
+    }
+
+    return rc;
+}
+
+
 ngx_int_t
 ngx_http_wasm_on_http(ngx_http_wasm_plugin_ctx_t *hwp_ctx, ngx_http_request_t *r,
                       ngx_http_wasm_phase_t type)
 {
     ngx_int_t                        rc;
     ngx_log_t                       *log;
+    ngx_str_t                       *cb_name;
+    ngx_http_wasm_ctx_t             *ctx;
     ngx_http_wasm_http_ctx_t        *http_ctx;
     ngx_http_wasm_main_conf_t       *wmcf;
 
@@ -607,36 +657,28 @@ ngx_http_wasm_on_http(ngx_http_wasm_plugin_ctx_t *hwp_ctx, ngx_http_request_t *r
         return NGX_DECLINED;
     }
 
+    ctx = ngx_http_wasm_get_module_ctx(r);
+
+    if (type == HTTP_RESPONSE_HEADERS) {
+        cb_name = &proxy_on_response_headers;
+    } else {
+        cb_name = &proxy_on_request_headers;
+    }
+
     if (hwp_ctx->hw_plugin->abi_version == PROXY_WASM_ABI_VER_010) {
         rc = ngx_wasm_vm.call(hwp_ctx->hw_plugin->plugin,
-                              &proxy_on_request_headers,
+                              cb_name,
                               true, NGX_WASM_PARAM_I32_I32, http_ctx->id, 0);
     } else {
         rc = ngx_wasm_vm.call(hwp_ctx->hw_plugin->plugin,
-                              &proxy_on_request_headers,
+                              cb_name,
                               true, NGX_WASM_PARAM_I32_I32_I32, http_ctx->id,
                               0, 1);
     }
 
     ngx_http_wasm_set_state(NULL);
 
-    if (rc < 0) {
-        return rc;
-    }
-
-    if (wmcf->code >= 100) {
-        int32_t code = wmcf->code;
-
-        /* reset code for next use */
-        wmcf->code = 0;
-
-        /* Return given http response instead of reaching the upstream.
-         * The body will be fetched later by ngx_http_wasm_fetch_local_body
-         * */
-        return code;
-    }
-
-    return rc;
+    return ngx_http_wasm_handle_rc_before_proxy(wmcf, ctx, rc);
 }
 
 
@@ -652,4 +694,53 @@ ngx_http_wasm_fetch_local_body(ngx_http_request_t *r)
         return &wmcf->body;
     }
     return NULL;
+}
+
+
+ngx_int_t
+ngx_http_wasm_on_http_call_resp(ngx_http_wasm_plugin_ctx_t *hwp_ctx, ngx_http_request_t *r,
+                                proxy_wasm_table_elt_t *headers, ngx_uint_t n_header,
+                                ngx_str_t *body)
+{
+    ngx_int_t                        rc;
+    ngx_log_t                       *log;
+    ngx_http_wasm_ctx_t             *ctx;
+    ngx_http_wasm_http_ctx_t        *http_ctx;
+    ngx_http_wasm_main_conf_t       *wmcf;
+
+    log = r->connection->log;
+    wmcf = ngx_http_get_module_main_conf(r, ngx_http_wasm_module);
+
+    if (!ngx_http_wasm_vm_inited) {
+        ngx_log_error(NGX_LOG_ERR, log, 0, "miss wasm_vm configuration");
+        return NGX_DECLINED;
+    }
+
+    hwp_ctx->state->r = r;
+    ngx_http_wasm_set_state(hwp_ctx->state);
+
+    http_ctx = ngx_http_wasm_fetch_http_ctx(hwp_ctx, r);
+    if (http_ctx == NULL) {
+        ngx_http_wasm_set_state(NULL);
+        return NGX_DECLINED;
+    }
+
+    ctx = ngx_http_wasm_get_module_ctx(r);
+    ctx->call_resp_headers = headers;
+    ctx->call_resp_n_header = n_header;
+    ctx->call_resp_body = body;
+
+    ngx_log_error(NGX_LOG_INFO, r->connection->log, 0,
+                  "run http callback callout id: %d, plugin ctx id: %d",
+                  ctx->callout_id, hwp_ctx->id);
+
+    rc = ngx_wasm_vm.call(hwp_ctx->hw_plugin->plugin,
+                          &proxy_on_http_call_response,
+                          false, NGX_WASM_PARAM_I32_I32_I32_I32_I32,
+                          hwp_ctx->id, ctx->callout_id,
+                          n_header, body == NULL ? 0 : body->len, 0);
+
+    ngx_http_wasm_set_state(NULL);
+
+    return ngx_http_wasm_handle_rc_before_proxy(wmcf, ctx, rc);
 }

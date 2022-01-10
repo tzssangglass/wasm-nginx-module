@@ -21,6 +21,11 @@ jobs:
         with:
           node-version: 10.0.0
 
+      - name: Set up Golang
+        uses: actions/setup-go@v2
+        with:
+          go-version: "1.17.5"
+
       - name: Install rust
         uses: actions-rs/toolchain@v1
         with:
@@ -46,11 +51,12 @@ jobs:
         run: |
           wget https://raw.githubusercontent.com/api7/apisix-build-tools/master/build-apisix-base.sh
           chmod +x build-apisix-base.sh
-          OR_PREFIX=$OPENRESTY_PREFIX ./build-apisix-base.sh latest
+          OR_PREFIX=$OPENRESTY_PREFIX cc_opt="-Werror" ./build-apisix-base.sh latest
 
       - name: Script
         run: |
-          sudo make build.go.testdata
+          sudo chown -R runner:root ~/.cache
+          make build.go.testdata
 
           pushd ./t/testdata/assemblyscript && npm install && npm run asbuild && popd
           pushd ./t/testdata/rust && cargo build --target=wasm32-wasi && popd

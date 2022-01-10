@@ -104,6 +104,36 @@ Called when HTTP request headers are received from the client. TODO: Headers can
 
 TODO: pass a correct `num_headers` but not 0.
 
+### `proxy_on_response_headers`
+
+* params:
+  - `i32 (uint32_t) context_id`
+  - `i32 (size_t) num_headers`
+  - `i32 (bool) end_of_stream`
+* returns:
+  - `i32 (proxy_action_t) next_action`
+
+Called when HTTP response headers are received from the upstream. TODO: Headers can be retrieved using
+`proxy_get_map` and/or `proxy_get_map_value`.
+
+TODO: pass a correct `num_headers` but not 0.
+
+
+## HTTP calls
+
+### `proxy_on_http_call_response`
+
+* params:
+  - `i32 (uint32_t) context_id`
+  - `i32 (uint32_t) callout_id`
+  - `i32 (size_t) num_headers`
+  - `i32 (size_t) body_size`
+  - `i32 (size_t) num_trailers`
+* returns:
+  - none
+
+Called when the response to the HTTP call (`callout_id`) is received.
+
 
 # Functions implemented in the host environment
 
@@ -160,6 +190,95 @@ configuration separately because proxy-wasm-rust-sdk still uses it.
   - `i32 (proxy_result_t) call_result`
 
 
+### `proxy_get_map` (`proxy_get_header_map_pairs`)
+
+* params:
+  - `i32 (proxy_map_type_t) map_type`
+  - `i32 (const char**) return_map_data`
+  - `i32 (size_t*) return_map_size`
+* returns:
+  - `i32 (proxy_result_t) call_result`
+
+Get all key-value pairs from a given map (`map_type`).
+
+
+### `proxy_get_map_value` (`proxy_get_header_map_value`)
+
+* params:
+  - `i32 (proxy_map_type_t) map_type`
+  - `i32 (const char*) key_data`
+  - `i32 (size_t) key_size`
+  - `i32 (const char**) return_value_data`
+  - `i32 (size_t*) return_value_size`
+* returns:
+  - `i32 (proxy_result_t) call_result`
+
+Get content of key (`key_data`, `key_size`) from a given map (`map_type`).
+
+
+### `proxy_set_map_value` (`proxy_replace_header_map_value`)
+
+* params:
+  - `i32 (proxy_map_type_t) map_type`
+  - `i32 (const char*) key_data`
+  - `i32 (size_t) key_size`
+  - `i32 (const char*) value_data`
+  - `i32 (size_t) value_size`
+* returns:
+  - `i32 (proxy_result_t) call_result`
+
+Set or replace the content of key (`key_data`, `key_size`) to the value (`value_data`, `value_size`)
+in a given map (`map_type`).
+
+
+### `proxy_add_map_value` (`proxy_add_header_map_value`)
+
+* params:
+  - `i32 (proxy_map_type_t) map_type`
+  - `i32 (const char*) key_data`
+  - `i32 (size_t) key_size`
+  - `i32 (const char*) value_data`
+  - `i32 (size_t) value_size`
+* returns:
+  - `i32 (proxy_result_t) call_result`
+
+Add key (`key_data`, `key_size`) with the value (`value_data`, `value_size`) to a given map
+(`map_type`).
+
+
+### `proxy_remove_map_value` (`proxy_remove_header_map_value`)
+
+* params:
+  - `i32 (proxy_map_type_t) map_type`
+  - `i32 (const char*) key_data`
+  - `i32 (size_t) key_size`
+* returns:
+  - `i32 (proxy_result_t) call_result`
+
+Remove key (`key_data`, `key_size`) from a given map (`map_type`).
+
+
+### `proxy_get_property`
+
+* params:
+  - `i32 (const char*) path_data`
+  - `i32 (size_t) path_size`
+  - `i32 (const char*) res_data`
+  - `i32 (size_t) res_size`
+
+Get data such as Nginx variables and plugin ID, Use path_data as key and write the value of the obtained variable to res_data.
+
+
+### `proxy_set_property`
+
+* params:
+  - `i32 (const char*) path_data`
+  - `i32 (size_t) path_size`
+  - `i32 (const char*) data`
+  - `i32 (size_t) size`
+
+Set the Nginx variable value, using path_data as the key and data as the value.
+
 ## HTTP (L7) extensions
 
 ### `proxy_send_http_response`
@@ -180,3 +299,26 @@ Sends HTTP response without forwarding request to the upstream.
 Note: we only implement the handling of response_code and response_body.
 
 We only implement `proxy_send_local_response` as an alias because proxy-wasm-go-sdk uses it.
+
+
+## HTTP calls
+
+### `proxy_dispatch_http_call`
+
+* params:
+  - `i32 (const char*) upstream_name_data`
+  - `i32 (size_t) upstream_name_size`
+  - `i32 (const char*) headers_map_data`
+  - `i32 (size_t) headers_map_size`
+  - `i32 (const char*) body_data`
+  - `i32 (size_t) body_size`
+  - `i32 (const char*) trailers_map_data`
+  - `i32 (size_t) trailers_map_size`
+  - `i32 (uint32_t) timeout_milliseconds`
+  - `i32 (uint32_t*) return_callout_id`
+* returns:
+  - `i32 (proxy_result_t) call_result`
+
+Dispatch a HTTP call to upstream (`upstream_name_data`, `upstream_name_size`). Once the response is
+returned to the host, `proxy_on_http_call_response` will be called with a unique call identifier
+(`return_callout_id`).
